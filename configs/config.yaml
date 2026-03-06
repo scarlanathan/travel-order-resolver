@@ -1,0 +1,249 @@
+project:
+  name: "Travel Order Resolver"
+  version: "1.0.0"
+  description: "NLP system for French train travel order processing"
+
+# ----------------
+# Paths
+# ----------------
+paths:
+  data:
+    raw: "data/raw"
+    processed: "data/processed"
+    training: "data/training"
+    datasets: "data/datasets"
+  models:
+    base: "models"
+    baseline: "models/baseline"
+    bert: "models/camembert-finetuned"
+    tokenizer: "models/tokenizer"
+  logs: "logs"
+  outputs: "outputs"
+
+# ----------------
+# Data Generation
+# ----------------
+data_generation:
+  num_sentences: 10000
+  num_templates: 300
+  min_templates_per_structure: 30
+  include_variations:
+    - no_capitals
+    - no_accents
+    - misspellings
+    - reversed_order
+    - with_noise
+  noise_ratio: 0.15
+  misspelling_ratio: 0.10
+
+# ----------------
+# French Cities (SNCF)
+# ----------------
+cities:
+  major_cities:
+    - Paris
+    - Lyon
+    - Marseille
+    - Toulouse
+    - Bordeaux
+    - Lille
+    - Nice
+    - Nantes
+    - Strasbourg
+    - Montpellier
+    - Rennes
+    - Reims
+    - Tours
+    - Saint-Étienne
+    - Le Havre
+    - Grenoble
+    - Dijon
+    - Angers
+    - Nîmes
+    - Villeurbanne
+
+  # Cities with common names/tricky cases
+  tricky_cities:
+    - Port-Boulet
+    - Albert
+    - Florence
+    - Lourdes
+    - Orange
+    - Cognac
+    - Bourg-en-Bresse
+
+# ----------------
+# NLP Configuration
+# ----------------
+nlp:
+  baseline:
+    use_spacy: true
+    spacy_model: "fr_core_news_lg"
+    use_regex: true
+    use_city_gazetteer: true
+
+  bert:
+    model_name: "camembert/camembert-base"
+    num_labels: 3  
+    max_length: 128
+    tokenizer_name: "camembert/camembert-base"
+
+# ----------------
+# Training Configuration
+# ----------------
+training:
+  batch_size: 16
+  learning_rate: 2.0e-5
+  num_epochs: 10
+  warmup_steps: 500
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+
+  # Data splits
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 3
+    min_delta: 0.001
+
+  # Checkpointing
+  save_steps: 500
+  save_total_limit: 3
+
+  # Evaluation
+  eval_steps: 100
+  evaluation_strategy: "steps"
+
+  # Device
+  device: "cuda"  
+  fp16: false  
+
+# ----------------
+# Metrics Configuration
+# ----------------
+metrics:
+  compute:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - confusion_matrix
+
+  per_entity:
+    - origin_precision
+    - origin_recall
+    - origin_f1
+    - destination_precision
+    - destination_recall
+    - destination_f1
+
+  robustness:
+    - accuracy_no_capitals
+    - accuracy_misspelled
+    - accuracy_no_accents
+
+  performance:
+    - avg_inference_time_ms
+    - cpu_usage_percent
+    - memory_usage_mb
+
+# ----------------
+# Pathfinding Configuration
+# ----------------
+pathfinding:
+  neo4j:
+    uri: "bolt://localhost:7687"
+    user: "neo4j"
+    password: "travel_password"
+
+  algorithms:
+    default: "dijkstra"  
+    optimize_for: "fastest"  
+
+  graph:
+    node_label: "Station"
+    relationship_type: "CONNECTS_TO"
+    weight_property: "duration"
+
+# ----------------
+# Logging Configuration
+# ----------------
+logging:
+  level: "INFO"  
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+  file:
+    enabled: true
+    path: "logs/app.log"
+    rotation: "500 MB"
+    retention: "10 days"
+  console:
+    enabled: true
+
+# ----------------
+# Input/Output Format
+# ----------------
+io:
+  input:
+    format: "csv"
+    encoding: "utf-8"
+    delimiter: ","
+    fields:
+      - sentence_id
+      - sentence
+
+  output:
+    format: "csv"
+    encoding: "utf-8"
+    delimiter: ","
+    invalid_code: "INVALID"
+    fields:
+      - sentence_id
+      - departure
+      - destination
+
+# ----------------
+# Speech Recognition 
+# ----------------
+speech:
+  enabled: true
+  language: "fr"
+  stt:
+    engine: "whisper"
+    model_size: "base"     # tiny, base, small, medium
+    sample_rate: 16000
+  tts:
+    engine: "pyttsx3"
+    rate: 160
+    volume: 1.0
+  microphone:
+    timeout: 10
+    phrase_time_limit: 15
+    calibration_duration: 2
+
+# ----------------
+# Experiment Tracking
+# ----------------
+experiment_tracking:
+  mlflow:
+    enabled: true
+    tracking_uri: "http://localhost:5000"
+    experiment_name: "travel-order-resolver"
+
+  wandb:
+    enabled: false
+    project: "travel-order-resolver"
+    entity: ""  
+
+# ----------------
+# Development
+# ----------------
+development:
+  debug: false
+  random_seed: 42
+  profile_memory: false
+  profile_cpu: false

@@ -1,0 +1,78 @@
+# TRAVEL ORDER RESOLVER - NLP Project
+
+
+# Core Python Dependencies
+# Core NLP & Deep Learning
+torch>=2.0.0
+transformers>=4.35.0
+datasets>=2.14.0
+tokenizers>=0.15.0
+sentencepiece>=0.1.99
+
+# French NLP Models
+spacy>=3.7.0
+# Install French model with: python -m spacy download fr_core_news_lg
+# Data Processing & Analysis
+pandas>=2.1.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+nltk>=3.8
+regex>=2023.10.0
+
+# Metrics & Evaluation
+seqeval>=1.2.2
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.17.0
+
+# Graph Algorithms & Database
+
+networkx>=3.2
+neo4j>=5.14.0
+
+# API & Data Collection
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+urllib3>=2.0.0
+
+# Speech Recognition
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.13
+openai-whisper>=20231117
+pyttsx3>=2.90
+
+# Utilities
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+tqdm>=4.66.0
+loguru>=0.7.0
+python-dateutil>=2.8.2
+
+# Development & Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.11.0
+flake8>=6.1.0
+isort>=5.12.0
+mypy>=1.7.0
+
+# Jupyter & Notebooks
+jupyter>=1.0.0
+jupyterlab>=4.0.0
+ipywidgets>=8.1.0
+notebook>=7.0.0
+
+# Performance Monitoring
+memory-profiler>=0.61.0
+py-cpuinfo>=9.0.0
+psutil>=5.9.0
+
+# ML Experiment Tracking
+
+mlflow>=2.8.0
+wandb>=0.16.0  
+
+# Additional Utilities
+click>=8.1.0  # For CLI creation
+colorama>=0.4.6  # For colored terminal output
+tabulate>=0.9.0  # For pretty printing tables
