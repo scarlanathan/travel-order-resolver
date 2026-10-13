@@ -49,8 +49,8 @@ Output: Route Paris -> Lyon (1h57, 392 km, TGV direct)
 
 ```bash
 # Cloner le repository
-git clone <repository-url>
-cd T-AIA-911-PAR_13
+git clone https://github.com/scarlanathan/travel-order-resolver.git
+cd travel-order-resolver
 
 # Créer l'environnement virtuel
 python -m venv venv
@@ -61,16 +61,27 @@ venv\Scripts\activate     # Windows
 # Installer les dépendances
 pip install -r requirements.txt
 
+# Variables d'environnement (clé API SNCF optionnelle, l'API publique fonctionne sans)
+cp .env.example .env
+
 # Télécharger les modèles spaCy français (optionnel, pour les modèles sm/md/lg)
 python -m spacy download fr_core_news_sm
 python -m spacy download fr_core_news_md
 python -m spacy download fr_core_news_lg
 ```
 
+> **Important :** les dossiers `models/`, `data/` et `outputs/` sont exclus du dépôt
+> (`.gitignore`, ~4 Go de modèles). Après un clone, il faut régénérer le dataset
+> puis entraîner les modèles (voir [Commandes](#commandes)). Sans modèle entraîné,
+> `travel_resolver.py` bascule automatiquement sur le modèle **Baseline**.
+>
+> La liste des gares est récupérée en direct depuis l'API Open Data SNCF : une
+> connexion Internet est nécessaire.
+
 ## Structure du projet
 
 ```
-T-AIA-911-PAR_13/
+travel-order-resolver/
 ├── configs/
 │   └── config.yaml              # Configuration générale
 ├── data/
@@ -117,9 +128,8 @@ T-AIA-911-PAR_13/
 │   ├── evaluate_baseline.py         # Évaluation baseline
 │   ├── train_spacy_models.py        # Entraînement spaCy
 │   ├── train_camembert.py           # Entraînement CamemBERT
-│   ├── reevaluate_camembert.py      # Réévaluation de tous les modèles CamemBERT
-│   ├── analyze_camembert_errors.py  # Analyse des erreurs de prédiction
-│   └── travel_resolver.py           # Pipeline complète NLP + Pathfinding
+│   ├── travel_resolver.py           # Pipeline complète NLP + Pathfinding
+│   └── travel_resolver_voice.py     # Pipeline vocale (Whisper + pyttsx3)
 ├── src/
 │   ├── api/
 │   │   ├── __init__.py
@@ -127,6 +137,9 @@ T-AIA-911-PAR_13/
 │   ├── pathfinder/
 │   │   ├── __init__.py
 │   │   └── dijkstra.py          # Algorithme Dijkstra (NetworkX)
+│   ├── speech/
+│   │   ├── transcriber.py       # Speech-to-text (Whisper)
+│   │   └── synthesizer.py       # Text-to-speech (pyttsx3)
 │   ├── data_generation/
 │   │   ├── sentence_generator.py
 │   │   └── templates.py
@@ -139,6 +152,9 @@ T-AIA-911-PAR_13/
 ├── docker/
 │   ├── Dockerfile.nlp
 │   └── docker-compose.yml
+├── docs/ & *.pdf                # Sujet, kickoff, bootstrap, rapports
+├── test.py                      # Génère les graphiques comparatifs spaCy/CamemBERT (*.png)
+├── Makefile
 ├── requirements.txt
 └── README.md
 ```
@@ -205,11 +221,6 @@ python scripts/train_camembert.py --train-size 1000 --epochs 3
 # Résultats dans outputs/evaluation/camembert_experiments.json
 # Modèles dans models/camembert_ner/
 
-# Réévaluer tous les modèles CamemBERT (après un fix par exemple)
-python scripts/reevaluate_camembert.py
-
-# Analyser les erreurs de prédiction sur un modèle
-python scripts/analyze_camembert_errors.py --model-path models/camembert_ner/camembert_ner_1000 --num-samples 30
 ```
 
 ### 5. Travel Resolver (Pipeline complète)
@@ -229,7 +240,14 @@ python scripts/travel_resolver.py -m baseline "Nantes Strasbourg"
 
 # Utiliser le modèle CamemBERT
 python scripts/travel_resolver.py -m camembert "Nantes Strasbourg"
+
+# Sans argument : démo sur 5 phrases d'exemple
+python scripts/travel_resolver.py
 ```
+
+> Modèles chargés par défaut : `models/spacy_ner/ner_blank_1000` (`-m spacy`) et
+> `models/camembert_ner/camembert_ner_1000` (`-m camembert`, repli sur
+> `camembert_ner_full`). Si le modèle est absent, le Baseline est utilisé.
 
 **Exemple de sortie :**
 ```
@@ -277,7 +295,7 @@ print(f"{paris.name} ({paris.code})")
 
 # Pipeline complète
 from scripts.travel_resolver import TravelResolver
-resolver = TravelResolver(nlp_model="camembert")
+resolver = TravelResolver(nlp_model="camembert")  # ou un chemin vers un modèle
 route = resolver.resolve("Je veux aller de Lyon à Nice")
 print(route)
 ```
@@ -436,3 +454,62 @@ python scripts/travel_resolver.py -m camembert "Je veux aller de Paris à Lyon"
 # Mode interactif
 python scripts/travel_resolver.py -m camembert --interactive
 ```
+
+## Module vocal (Speech-to-Text / Text-to-Speech)
+
+Le script `scripts/travel_resolver_voice.py` ajoute une entrée vocale (**Whisper**)
+et une réponse vocale (**pyttsx3**) au-dessus de la pipeline `TravelResolver`.
+
+```bash
+# Dépendances système (ffmpeg, portaudio, espeak-ng) - Linux/macOS
+make install-speech
+
+# Mode vocal interactif
+python scripts/travel_resolver_voice.py
+
+# Saisie texte + réponse vocale
+python scripts/travel_resolver_voice.py --text
+
+# Options
+#   --nlp-model, -m   : spacy (défaut) ou baseline
+#   --optimize, -o    : duration (défaut) ou distance
+#   --model-size      : taille Whisper (tiny, base, small, medium)
+```
+
+Raccourcis Makefile : `make voice`, `make voice-text`, `make voice-small`,
+`make test-stt`, `make test-tts`, `make demo-voice`.
+
+## Docker
+
+```bash
+make docker-build   # construit les conteneurs (docker/)
+make docker-up      # Neo4j :7474, Jupyter :8888, MLflow :5000
+make docker-down
+```
+
+## État actuel et limitations connues
+
+Vérification effectuée le 13/10/2026 (Python 3.13, spaCy 3.8, transformers 5.1, torch 2.10) :
+
+| Élément | État |
+|---------|------|
+| `travel_resolver.py -m baseline` | ✅ 5/5 phrases de démo résolues |
+| `travel_resolver.py -m camembert` (1k) | ✅ 5/5 phrases de démo résolues |
+| `travel_resolver.py -m spacy` (blank 1k) | ⚠️ 4/5 — échoue sur *« Un billet Lyon Bordeaux s'il vous plaît »* (les modèles blank 3k/5k la résolvent correctement) |
+| `travel_resolver_voice.py --help` | ✅ |
+| `evaluate_baseline.py` | ⚠️ s'exécute, mais n'obtient que **~4 % d'accuracy** sur le test set |
+
+- **Score du Baseline non reproductible** : le gazetteer du Baseline est construit à
+  partir des gares renvoyées par l'API SNCF (≈536 villes), dont les noms ne
+  correspondent pas aux labels du dataset (ex. `Colmar Mésanges`, `Ebblinghem`).
+  Les 67 % annoncés plus haut ne sont donc plus atteints ; en fournissant au
+  Baseline la liste des villes du dataset (`BaselineModel(cities=...)`), on obtient
+  environ 81 % d'accuracy.
+- **Nombre de correspondances** : `Changes` compte les changements de *type de
+  ligne* (TGV → Intercités…), pas le nombre de trains : un trajet 100 % TGV en
+  4 étapes affiche `Changes: 0`.
+- **Makefile** : les cibles `data`, `download-sncf`, `train*`, `evaluate*`,
+  `predict`, `test`, `neo4j-import` appellent des scripts ou un dossier `tests/`
+  qui n'existent pas. Utiliser directement les scripts de `scripts/` décrits plus haut.
+- Les résultats CamemBERT cités (`camembert_experiments.json`, modèles 3k/5k/LR/batch/scheduler)
+  proviennent d'entraînements antérieurs et ne sont pas versionnés.
