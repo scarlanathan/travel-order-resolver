@@ -19,6 +19,8 @@ from dataclasses import dataclass
 import json
 import time
 
+from src.nlp.gazetteer import CityGazetteer, find_entity_span
+
 try:
     from tqdm import tqdm
 except ImportError:
@@ -89,40 +91,29 @@ class SpacyNERTrainer:
         """
         Find character spans for origin and destination in text.
 
+        Matching is tolerant to case, accents, hyphens and misspellings
+        (labels are canonical names, sentences may contain variants).
+
         Returns list of (start, end, label) tuples.
         """
         entities = []
-        text_lower = text.lower()
 
-        # Find origin
         if origin and origin != "INVALID":
-            origin_lower = origin.lower()
-            start = text_lower.find(origin_lower)
-            if start != -1:
-                # Get the actual text (preserving original case)
-                end = start + len(origin)
-                entities.append((start, end, "ORIGIN"))
+            span = find_entity_span(text, origin)
+            if span:
+                entities.append((span[0], span[1], "ORIGIN"))
 
-        # Find destination
         if destination and destination != "INVALID":
-            dest_lower = destination.lower()
-            # Search from after origin if possible to avoid overlap
-            search_start = 0
-            if entities:
-                search_start = entities[0][1]  # After origin
-
-            start = text_lower.find(dest_lower, search_start)
-            if start == -1:
-                # Try from beginning if not found after origin
-                start = text_lower.find(dest_lower)
-
-            if start != -1:
-                end = start + len(destination)
-                # Check for overlap with origin
-                if not entities or not (entities[0][0] <= start < entities[0][1]):
-                    entities.append((start, end, "DESTINATION"))
+            span = find_entity_span(text, destination, exclude=[e[:2] for e in entities])
+            if span:
+                entities.append((span[0], span[1], "DESTINATION"))
 
         return entities
+
+    @staticmethod
+    def _expected_entities(origin: str, destination: str) -> int:
+        """Number of entities a sample should contain."""
+        return sum(1 for c in (origin, destination) if c and c != "INVALID")
 
     def convert_csv_to_spacy(
         self,
@@ -166,12 +157,13 @@ class SpacyNERTrainer:
                 ents = []
 
                 for start, end, label in entities:
-                    span = doc.char_span(start, end, label=label)
+                    span = doc.char_span(start, end, label=label, alignment_mode="expand")
                     if span is not None:
                         ents.append(span)
 
-                # Only add if we found at least one entity or it's invalid
-                if ents or (origin == "INVALID" and destination == "INVALID"):
+                # Only add fully annotated samples: a missing entity would be
+                # learned as "not a city"
+                if len(ents) == self._expected_entities(origin, destination):
                     doc.ents = ents
                     doc_bin.add(doc)
                     converted += 1
@@ -489,7 +481,7 @@ path = ${{paths.dev}}
 
                 entities = self._find_entity_spans(sentence, origin, destination)
 
-                if entities or (origin == "INVALID" and destination == "INVALID"):
+                if len(entities) == self._expected_entities(origin, destination):
                     data.append((sentence, {"entities": entities}))
 
         return data
@@ -509,15 +501,28 @@ class SpacyNERModel:
     Compatible with the evaluator interface.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(
+        self,
+        model_path: str,
+        use_gazetteer: bool = True,
+        gazetteer: Optional[CityGazetteer] = None,
+        fuzzy_cities: bool = False,
+    ):
         """
         Load trained spaCy model.
 
         Args:
             model_path: Path to saved spaCy model
+            use_gazetteer: Post-process predictions with the city gazetteer
+                (canonical names, missing entity completion, invalid detection)
+            gazetteer: Prebuilt gazetteer to share between models
+            fuzzy_cities: Also map misspelled names to the closest known city
+                (better on known cities, worse on cities missing from the gazetteer)
         """
         self.nlp = spacy.load(model_path)
         self.model_path = model_path
+        self.gazetteer = (gazetteer or CityGazetteer()) if use_gazetteer else None
+        self.fuzzy_cities = fuzzy_cities
 
     def predict(self, sentence: str) -> SpacyExtractionResult:
         """
@@ -540,6 +545,13 @@ class SpacyNERModel:
             elif ent.label_ == "DESTINATION" and destination is None:
                 destination = ent.text
 
+        method = "spacy_ner"
+        if self.gazetteer is not None:
+            origin, destination = self.gazetteer.refine(
+                sentence, origin, destination, fuzzy=self.fuzzy_cities
+            )
+            method = "spacy_ner+gazetteer"
+
         is_valid = origin is not None and destination is not None
 
         # Confidence based on number of entities found
@@ -554,7 +566,7 @@ class SpacyNERModel:
             destination=destination,
             is_valid=is_valid,
             confidence=confidence,
-            method="spacy_ner"
+            method=method
         )
 
 

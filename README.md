@@ -28,12 +28,13 @@ Output: Route Paris -> Lyon (1h57, 392 km, TGV direct)
 
 ### Modèles NLP implémentés
 
-| Modèle | Accuracy | F1 Score | Temps inférence | Description |
-|--------|----------|----------|-----------------|-------------|
-| **CamemBERT 3k** | **75.42%** | **98.03%** | 108 ms | Transformers fine-tuné (meilleure précision) |
-| spaCy blank 5k | 69.38% | 95.98% | 9.5 ms | Meilleur modèle spaCy |
-| spaCy blank 3k | 70.00% | 95.86% | 5.2 ms | Excellent compromis performance/vitesse |
-| Baseline | 67.13% | 88.41% | 17.38 ms | Règles + prépositions + gazetteer |
+| Modèle | Accuracy (villes connues) | Accuracy (villes inconnues) | Inférence | Description |
+|--------|---------------------------|-----------------------------|-----------|-------------|
+| **CamemBERT 1k + gazetteer** | **98.33%** | **98.75%** | 65 ms | Transformers fine-tuné : le plus robuste |
+| spaCy blank 1k + gazetteer | 98.73% | 83.41% | 2.5 ms | Très rapide, généralise moins bien |
+| Baseline | 99.93% | 0.00% | 0.3 ms | Gazetteer + mots-indices (monde fermé) |
+
+Détails, méthodologie et limites : voir [Résultats des modèles](#résultats-des-modèles).
 
 ### Réseau ferroviaire
 
@@ -125,7 +126,8 @@ travel-order-resolver/
 ├── scripts/
 │   ├── generate_dataset.py          # Génération du dataset
 │   ├── generate_dataset_simple.py
-│   ├── evaluate_baseline.py         # Évaluation baseline
+│   ├── evaluate_baseline.py         # Évaluation baseline (rapport détaillé)
+│   ├── evaluate_models.py           # Comparaison de tous les modèles (villes connues / inconnues)
 │   ├── train_spacy_models.py        # Entraînement spaCy
 │   ├── train_camembert.py           # Entraînement CamemBERT
 │   ├── travel_resolver.py           # Pipeline complète NLP + Pathfinding
@@ -145,10 +147,13 @@ travel-order-resolver/
 │   │   └── templates.py
 │   └── nlp/
 │       ├── evaluator.py         # Classe d'évaluation
+│       ├── gazetteer.py         # Villes connues, alignement des entités, post-traitement
 │       └── models/
 │           ├── baseline_model.py    # Modèle baseline
 │           ├── spacy_ner.py         # Modèle spaCy
 │           └── camembert_ner.py     # Modèle CamemBERT
+├── tests/
+│   └── test_nlp.py              # Tests unitaires (gazetteer, baseline, évaluateur)
 ├── docker/
 │   ├── Dockerfile.nlp
 │   └── docker-compose.yml
@@ -174,7 +179,7 @@ python scripts/generate_dataset_simple.py
 ### 2. Modèle Baseline
 
 ```bash
-# Évaluer le modèle baseline (règles + prépositions)
+# Évaluer le modèle baseline (gazetteer + mots-indices)
 python scripts/evaluate_baseline.py
 
 # Résultats dans outputs/evaluation/baseline_test_report.csv
@@ -187,13 +192,13 @@ python scripts/evaluate_baseline.py
 python scripts/train_spacy_models.py --all-experiments --n-iter 30
 
 # Entraîner un modèle spécifique
-python scripts/train_spacy_models.py --size 1000 --n-iter 30
+python scripts/train_spacy_models.py --train-size 1000 --n-iter 30
 
 # Options disponibles:
 #   --all-experiments : Entraîner tous les modèles (blank_1k, blank_3k, blank_5k, blank_full, sm_full, md_full, lg_full)
-#   --size            : Nombre de samples (1000, 3000, 5000, ou 'full')
+#   --train-size      : Nombre de samples (omis = dataset complet)
 #   --n-iter          : Nombre d'itérations d'entraînement (défaut: 30)
-#   --base            : Modèle de base ('blank', 'sm', 'md', 'lg')
+#   --base-model      : Modèle de base (blank, fr_core_news_sm, fr_core_news_md, fr_core_news_lg)
 #   --output          : Fichier de sortie des résultats
 
 # Résultats dans outputs/evaluation/spacy_experiments.json
@@ -220,10 +225,27 @@ python scripts/train_camembert.py --train-size 1000 --epochs 3
 
 # Résultats dans outputs/evaluation/camembert_experiments.json
 # Modèles dans models/camembert_ner/
-
 ```
 
-### 5. Travel Resolver (Pipeline complète)
+> L'entraînement CamemBERT nécessite `accelerate` (inclus dans `requirements.txt`).
+
+### 5. Comparaison des modèles
+
+```bash
+# Évalue le baseline et tous les modèles de models/ (bruts et + gazetteer)
+# sur le test set et sur un test set de villes inconnues (généré via l'API SNCF)
+python scripts/evaluate_models.py
+
+# Modèles choisis, sans le test villes inconnues (hors ligne)
+python scripts/evaluate_models.py --models baseline models/spacy_ner/ner_blank_1000 --no-unseen
+
+# Résultats dans outputs/evaluation/model_comparison.json
+
+# Tests unitaires
+python -m pytest tests/ -v
+```
+
+### 6. Travel Resolver (Pipeline complète)
 
 ```bash
 # Résoudre une demande de voyage (NLP + Pathfinding)
@@ -263,18 +285,19 @@ Changes: 0
 2. Avignon -> Marseille (TGV, 20 min, 83.8 km)
 ```
 
-### 6. Utilisation des modèles en Python
+### 7. Utilisation des modèles en Python
 
 ```python
 # NLP - Extraction origine/destination (spaCy)
 from src.nlp.models.spacy_ner import SpacyNERModel
-model = SpacyNERModel("models/spacy_ner/ner_blank_3000")
+model = SpacyNERModel("models/spacy_ner/ner_blank_1000")
 result = model.predict("Un billet Marseille Bordeaux")
 print(f"Origine: {result.origin}, Destination: {result.destination}")
 
 # NLP - Extraction avec CamemBERT
+# (post-traitement gazetteer actif par défaut, use_gazetteer=False pour la sortie brute)
 from src.nlp.models.camembert_ner import CamembertNERModel
-model = CamembertNERModel("models/camembert_ner/camembert_ner_3000")
+model = CamembertNERModel("models/camembert_ner/camembert_ner_1000")
 result = model.predict("Je veux aller de Paris à Lyon")
 print(f"Origine: {result.origin}, Destination: {result.destination}")
 
@@ -306,94 +329,91 @@ print(route)
 
 | Type | Emplacement |
 |------|-------------|
-| Métriques Baseline | `outputs/evaluation/baseline_test_report.csv` |
-| Métriques spaCy | `outputs/evaluation/spacy_experiments.json` |
-| Métriques CamemBERT | `outputs/evaluation/camembert_experiments.json` |
+| Comparaison de tous les modèles | `outputs/evaluation/model_comparison.json` (`scripts/evaluate_models.py`) |
+| Rapport détaillé Baseline | `outputs/evaluation/baseline_test_report.csv` |
+| Entraînements spaCy / CamemBERT | `outputs/evaluation/spacy_experiments.json`, `camembert_experiments.json` |
 | Analyse qualitative | `docs/critique_qualitative.md` |
 
-### Résultats comparatifs (meilleurs modèles)
+### Méthodologie
 
-| Modèle | Accuracy | F1 Score | Origin F1 | Dest F1 | Inférence |
-|--------|----------|----------|-----------|---------|-----------|
-| **CamemBERT 3k** | **75.42%** | **98.03%** | 97.89% | 98.17% | 108 ms |
-| CamemBERT lr=1e-5 | 75.07% | 98.00% | 97.94% | 98.06% | 78 ms |
-| spaCy blank 5k | 69.38% | 95.98% | 96.27% | 95.68% | 9.5 ms |
-| spaCy blank 3k | 70.00% | 95.86% | 96.33% | 95.38% | 5.2 ms |
-| Baseline | 67.13% | 88.41% | - | - | 17.38 ms |
+- **Accuracy** : une phrase est correcte si l'origine **et** la destination sont justes.
+  Pour une phrase invalide (`INVALID`), le modèle doit ne rien renvoyer.
+- **Villes connues** : `data/training/test.csv` (1500 phrases dont 215 invalides).
+  Toutes ses villes apparaissent aussi dans le train : ce test mesure la performance
+  sur des gares connues.
+- **Villes inconnues** : les 1284 phrases valides du test, dont les villes sont
+  remplacées par des gares SNCF absentes du train (`data/training/test_unseen_cities.csv`).
+  Ce test mesure la capacité à généraliser à un nom jamais vu.
 
-### Tous les modèles disponibles
+### Résultats (mesurés le 15/10/2026, sur CPU)
 
-#### Modèles spaCy (7 variantes)
+| Modèle | Villes connues : accuracy | F1 | Villes inconnues : accuracy | F1 | Inférence |
+|--------|------------|-----|------------|-----|-----------|
+| Baseline (gazetteer + mots-indices) | **99.93%** | 99.98% | 0.00% | 0.00% | 0.3 ms |
+| spaCy blank 1k (brut) | 91.53% | 96.72% | 83.41% | 94.32% | 2.3 ms |
+| spaCy blank 1k + gazetteer | 98.73% | 99.59% | 83.41% | 91.99% | 2.5 ms |
+| spaCy blank full (brut) | 89.00% | 96.12% | 48.99% | 81.06% | 2.2 ms |
+| spaCy blank full + gazetteer | 98.87% | 99.61% | 48.99% | 68.88% | 2.6 ms |
+| CamemBERT 1k (brut) | 96.73% | 99.22% | **98.75%** | **99.51%** | 66 ms |
+| **CamemBERT 1k + gazetteer** | 98.33% | 99.45% | **98.75%** | **99.51%** | 65 ms |
 
-| Modèle | Base | Samples | Accuracy | F1 Score | Origin F1 | Dest F1 | Inférence |
-|--------|------|---------|----------|----------|-----------|---------|-----------|
-| ner_blank_5000 | blank | 4945 | 69.38% | **95.98%** | 96.27% | 95.68% | 9.5 ms |
-| ner_blank_full | blank | 8352 | 69.29% | 95.92% | 96.04% | 95.80% | 5.4 ms |
-| ner_blank_3000 | blank | 2965 | 70.00% | 95.86% | 96.33% | 95.38% | 5.2 ms |
-| ner_blank_1000 | blank | 989 | 67.72% | 94.92% | 96.04% | 93.81% | 5.3 ms |
-| ner_md_full | fr_core_news_md | 8352 | 54.94% | 90.55% | 90.91% | 90.19% | 13.1 ms |
-| ner_lg_full | fr_core_news_lg | 8352 | 55.03% | 90.26% | 90.26% | 90.26% | 8.5 ms |
-| ner_sm_full | fr_core_news_sm | 8352 | 52.32% | 86.93% | 89.33% | 84.53% | 11.9 ms |
+Les modèles spaCy `ner_blank_3000`, `ner_blank_5000`, `ner_sm_full` et `ner_md_full`
+ont été entraînés le 30/01, avant la régénération du dataset (12/02). Ils n'obtiennent
+que 26 à 37 % d'accuracy sur le test actuel et doivent être réentraînés.
 
-#### Modèles CamemBERT (12 variantes)
+### Ce qui a fait progresser l'accuracy
 
-**Impact de la taille du dataset :**
+| Correction | Effet mesuré |
+|------------|--------------|
+| **Évaluateur** : une phrase invalide correctement rejetée (`None`) était comptée fausse face au label `"INVALID"` | Jusqu'à +14,3 points sur tous les modèles (215 phrases sur 1500). Les anciennes accuracies (67 à 75 %) étaient sous-estimées. |
+| **Baseline réécrit** sur un gazetteer (villes du train + gares SNCF) tolérant la casse, les accents, les tirets et les fautes, avec un rôle origine/destination déduit des mots-indices (`de`, `depuis`, `vers`, `à destination de`…) | 4,2 % → **99,9 %**. L'ancien gazetteer venait de l'API SNCF live, dont les noms ne correspondaient pas au dataset ; 227 erreurs sur 278 étaient des inversions origine/destination. |
+| **CamemBERT : décodage par mot** (le premier sous-mot décide du label de tout le mot) | 94,6 % → 96,7 % sans réentraînement. Plus d'entités coupées comme « Musée d' » ou « l » pour « L'Isle-Jourdain ». |
+| **Post-traitement gazetteer** des modèles NER : prolonge un span tronqué jusqu'à la ville connue, complète l'entité manquante, rejette les phrases à une seule ville (« Quel temps fait-il à X ? ») | spaCy 1k : 91,5 → 98,7 % ; CamemBERT : 96,7 → 98,3 %. **Aucune perte** sur les villes inconnues. |
+| **Alignement des annotations d'entraînement** : les entités étaient cherchées par correspondance exacte du label. 12 % des phrases valides avaient donc une ville non annotée (sans accent, avec une faute, espace au lieu d'un tiret), apprise comme « pas une ville ». | Annotation : 87,8 % → 100 % des phrases. Explique l'erreur principale de spaCy (« une seule entité extraite »). **Effet à mesurer après réentraînement.** |
 
-| Modèle | Samples | Accuracy | F1 Score | Origin F1 | Dest F1 | Inférence |
-|--------|---------|----------|----------|-----------|---------|-----------|
-| **camembert_ner_3000** | 3000 | **75.42%** | **98.03%** | 97.89% | 98.17% | 108 ms |
-| camembert_ner_5000 | 5000 | 72.88% | 97.34% | 97.20% | 97.49% | 112 ms |
-| camembert_ner_full | 8462 | 72.00% | 97.06% | 97.09% | 97.03% | 96 ms |
-| camembert_ner_1000 | 1000 | 71.48% | 96.53% | 96.45% | 96.62% | 161 ms |
-
-**Impact du learning rate (dataset full) :**
-
-| Modèle | LR | Accuracy | F1 Score | Inférence |
-|--------|-----|----------|----------|-----------|
-| camembert_lr1e-05 | 1e-5 | **75.07%** | **98.00%** | 78 ms |
-| camembert_lr3e-05 | 3e-5 | 72.18% | 96.88% | 91 ms |
-| camembert_lr5e-05 | 5e-5 | 71.92% | 97.03% | 80 ms |
-
-**Impact du batch size (dataset full) :**
-
-| Modèle | Batch | Accuracy | F1 Score | Inférence |
-|--------|-------|----------|----------|-----------|
-| camembert_bs32 | 32 | **72.35%** | **97.14%** | 80 ms |
-| camembert_bs16 | 16 | 71.83% | 96.91% | 81 ms |
-| camembert_bs8 | 8 | 70.87% | 96.65% | 78 ms |
-
-**Impact du scheduler (dataset full) :**
-
-| Modèle | Scheduler | Accuracy | F1 Score | Inférence |
-|--------|-----------|----------|----------|-----------|
-| camembert_sched_cosine | cosine | 71.74% | 96.88% | 134 ms |
-| camembert_sched_linear | linear | 71.13% | 96.65% | 135 ms |
+**Le mode « fuzzy » reste désactivé par défaut.** `SpacyNERModel(..., fuzzy_cities=True)`
+(idem pour CamemBERT) corrige aussi les fautes vers la ville connue la plus proche.
+Mesuré : +1 point sur les villes connues, mais −13 à −28 points sur les villes inconnues
+(« Vosves » devient « Voves »).
 
 ### Recommandation NLP
 
-**Deux modèles recommandés selon votre cas d'usage :**
+- **CamemBERT 1k + gazetteer** : meilleur choix global. C'est le seul modèle qui reste
+  à ~99 % sur des villes jamais vues, pour ~65 ms par phrase sur CPU.
+- **spaCy blank 1k + gazetteer** : ~25× plus rapide et excellent sur les gares connues,
+  mais perd ~15 points sur les villes inconnues (à re-mesurer après réentraînement).
+- **Baseline** : parfait si toutes les gares sont dans le gazetteer (monde fermé),
+  inutilisable sinon. C'est le principal argument en faveur des modèles NER.
 
-**CamemBERT 3k** - Pour la meilleure précision :
-- Performance exceptionnelle (98.03% F1, 75.42% accuracy)
-- Extraction très précise des entités (97.89% origin, 98.17% destination)
-- Modèle transformers robuste
-- Temps d'inférence : ~108 ms (acceptable pour API)
+### Pistes pour progresser encore
 
-**spaCy blank 3k** - Pour la rapidité :
-- Excellente performance (95.86% F1, 70.00% accuracy)
-- Temps d'inférence ultra-rapide (5.2 ms, **~20x plus rapide**)
-- Modèle léger (~10 MB vs ~400 MB pour CamemBERT)
-- Idéal pour production à fort volume
+1. **Réentraîner spaCy et CamemBERT** avec l'alignement corrigé (`make train`). C'est
+   le gain attendu le plus important pour spaCy sur les villes inconnues.
+2. **Rendre le dataset plus exigeant** : réserver une partie des gares au test
+   (aujourd'hui, toutes les villes du test sont dans le train), ajouter des homonymes
+   prénom/ville (Albert, Florence) et des phrases à trois villes ou plus.
+3. **Élargir le gazetteer** à la liste complète des gares SNCF via l'API, pour que le
+   baseline et le post-traitement couvrent toutes les gares réelles.
+4. **Erreurs restantes de CamemBERT** sur les villes inconnues : surtout des frontières
+   d'entités sur les noms composés (« Saint-Jean-de-Maurienne Arvan »). Davantage de
+   noms longs dans le dataset aideraient.
 
-### Observations clés
+<details>
+<summary>Historique : résultats annoncés précédemment (ancien évaluateur, modèles non disponibles)</summary>
 
-1. **3000 samples est le sweet spot** : Pour spaCy et CamemBERT, 3000 samples donne les meilleurs résultats. Au-delà, les gains sont marginaux voire négatifs.
+Ces chiffres ont été mesurés avec l'ancien évaluateur, qui comptait faux toutes les
+phrases invalides. Les modèles correspondants (CamemBERT 3k/5k/full, variations de LR,
+de batch et de scheduler) ne sont plus disponibles.
 
-2. **Les modèles blank spaCy battent les pré-entraînés** : Les modèles sm/md/lg (52-55% accuracy) sous-performent largement les modèles blank (67-70% accuracy). Les entités NER pré-entraînées interfèrent avec l'apprentissage de ORIGIN/DESTINATION.
+| Modèle | Accuracy | F1 Score | Inférence |
+|--------|----------|----------|-----------|
+| CamemBERT 3k | 75.42% | 98.03% | 108 ms |
+| CamemBERT lr=1e-5 | 75.07% | 98.00% | 78 ms |
+| spaCy blank 5k | 69.38% | 95.98% | 9.5 ms |
+| spaCy blank 3k | 70.00% | 95.86% | 5.2 ms |
+| Baseline (ancienne version) | 67.13% | 88.41% | 17.38 ms |
 
-3. **Un LR plus faible améliore CamemBERT** : lr=1e-5 (98.00% F1) surpasse lr=5e-5 (97.03% F1) sur le dataset complet.
-
-4. **Le post-processing est crucial** : La méthode `_clean_entity()` dans CamemBERT nettoie les espaces et ponctuation parasites, améliorant significativement les métriques.
+</details>
 
 ## Module Pathfinding
 
@@ -489,27 +509,24 @@ make docker-down
 
 ## État actuel et limitations connues
 
-Vérification effectuée le 13/10/2026 (Python 3.13, spaCy 3.8, transformers 5.1, torch 2.10) :
+Vérifié le 15/10/2026 (Python 3.13, spaCy 3.8, transformers 5.1, torch 2.10, CPU) :
 
 | Élément | État |
 |---------|------|
-| `travel_resolver.py -m baseline` | ✅ 5/5 phrases de démo résolues |
-| `travel_resolver.py -m camembert` (1k) | ✅ 5/5 phrases de démo résolues |
-| `travel_resolver.py -m spacy` (blank 1k) | ⚠️ 4/5 — échoue sur *« Un billet Lyon Bordeaux s'il vous plaît »* (les modèles blank 3k/5k la résolvent correctement) |
-| `travel_resolver_voice.py --help` | ✅ |
-| `evaluate_baseline.py` | ⚠️ s'exécute, mais n'obtient que **~4 % d'accuracy** sur le test set |
+| `travel_resolver.py` (baseline, spaCy 1k, CamemBERT 1k) | ✅ 5/5 phrases de démo résolues |
+| `travel_resolver.py -a` (routes alternatives) | ✅ |
+| `evaluate_models.py`, `evaluate_baseline.py` | ✅ |
+| `pytest tests/` | ✅ 22 tests |
+| `travel_resolver_voice.py --help` | ✅ (STT/TTS non testés) |
 
-- **Score du Baseline non reproductible** : le gazetteer du Baseline est construit à
-  partir des gares renvoyées par l'API SNCF (≈536 villes), dont les noms ne
-  correspondent pas aux labels du dataset (ex. `Colmar Mésanges`, `Ebblinghem`).
-  Les 67 % annoncés plus haut ne sont donc plus atteints ; en fournissant au
-  Baseline la liste des villes du dataset (`BaselineModel(cities=...)`), on obtient
-  environ 81 % d'accuracy.
+- **Test set en monde fermé** : toutes les villes du test apparaissent dans le train.
+  Le test « villes inconnues » de `evaluate_models.py` compense en partie.
+- **Sans dataset** (clone frais), le gazetteer ne contient que les 51 gares principales.
+  Générer le dataset (`python scripts/generate_dataset_simple.py`) avant d'évaluer.
+- **Modèles périmés** : `ner_blank_3000`, `ner_blank_5000`, `ner_sm_full` et `ner_md_full`
+  ont été entraînés sur un ancien dataset et sont à réentraîner.
 - **Nombre de correspondances** : `Changes` compte les changements de *type de
-  ligne* (TGV → Intercités…), pas le nombre de trains : un trajet 100 % TGV en
-  4 étapes affiche `Changes: 0`.
-- **Makefile** : les cibles `data`, `download-sncf`, `train*`, `evaluate*`,
-  `predict`, `test`, `neo4j-import` appellent des scripts ou un dossier `tests/`
-  qui n'existent pas. Utiliser directement les scripts de `scripts/` décrits plus haut.
-- Les résultats CamemBERT cités (`camembert_experiments.json`, modèles 3k/5k/LR/batch/scheduler)
-  proviennent d'entraînements antérieurs et ne sont pas versionnés.
+  ligne* (TGV → Intercités…), pas le nombre de trains. Un trajet 100 % TGV en
+  4 étapes affiche donc `Changes: 0`.
+- **Makefile** : les cibles pointent désormais vers les scripts existants. Non testé
+  sous Windows, où `make` n'est pas installé par défaut.

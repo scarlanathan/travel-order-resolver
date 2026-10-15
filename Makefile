@@ -1,9 +1,12 @@
 # TRAVEL ORDER RESOLVER - Makefile
 
-.PHONY: help setup docker-build docker-up docker-down install install-speech clean data train evaluate predict test notebooks format lint voice voice-text test-stt test-tts
+.PHONY: help setup docker-build docker-up docker-down install install-speech clean data generate train train-spacy train-bert evaluate evaluate-baseline predict test notebooks format lint voice voice-text test-stt test-tts
 
 # Default target
 .DEFAULT_GOAL := help
+
+# Python executable (use venv if available: venv/bin on Linux/macOS, venv/Scripts on Windows)
+PYTHON := $(shell if [ -x "venv/bin/python" ]; then echo "venv/bin/python"; elif [ -x "venv/Scripts/python.exe" ]; then echo "venv/Scripts/python.exe"; else echo "python"; fi)
 
 # Help
 help:
@@ -19,15 +22,15 @@ help:
 	@echo "  make docker-down   - Stop all services"
 	@echo ""
 	@echo "Data:"
-	@echo "  make data          - Download SNCF data and generate dataset"
-	@echo "  make generate      - Generate training sentences"
+	@echo "  make data          - Generate the dataset (train/val/test)"
 	@echo ""
 	@echo "Training & Evaluation:"
-	@echo "  make train         - Train all models (baseline + BERT)"
-	@echo "  make train-baseline - Train baseline model only"
-	@echo "  make train-bert    - Train BERT model only"
-	@echo "  make evaluate      - Evaluate models on test set"
-	@echo "  make predict       - Run prediction on sample data"
+	@echo "  make train         - Train spaCy + CamemBERT models"
+	@echo "  make train-spacy   - Train spaCy NER (blank, 1000 samples)"
+	@echo "  make train-bert    - Train CamemBERT NER (1000 samples)"
+	@echo "  make evaluate      - Compare all models (known + unseen cities)"
+	@echo "  make evaluate-baseline - Detailed baseline report"
+	@echo "  make predict       - Run the travel resolver demo"
 	@echo ""
 	@echo "Voice Module (STT + TTS):"
 	@echo "  make install-speech - Install system deps (ffmpeg, portaudio)"
@@ -84,60 +87,51 @@ docker-shell:
 	cd docker && docker-compose exec nlp /bin/bash
 
 # Data
-data: download-sncf generate
+data: generate
 	@echo "✅ Data preparation complete"
 
-download-sncf:
-	python scripts/download_sncf_data.py
-	@echo "✅ SNCF data downloaded"
-
 generate:
-	python scripts/generate_dataset.py
+	$(PYTHON) scripts/generate_dataset_simple.py
 	@echo "✅ Training dataset generated"
 
-# Training
-train: train-baseline train-bert
+# Training (the baseline is rule-based: no training needed)
+train: train-spacy train-bert
 	@echo "✅ All models trained"
 
-train-baseline:
-	python scripts/train.py --model baseline
-	@echo "✅ Baseline model trained"
+train-spacy:
+	$(PYTHON) scripts/train_spacy_models.py --train-size 1000 --n-iter 30
+	@echo "✅ spaCy model trained"
 
 train-bert:
-	python scripts/train.py --model bert
-	@echo "✅ BERT model trained"
+	$(PYTHON) scripts/train_camembert.py --train-size 1000 --epochs 3
+	@echo "✅ CamemBERT model trained"
 
 # Evaluation
 evaluate:
-	python scripts/evaluate.py --all
-	@echo "✅ Evaluation complete - see outputs/evaluation/"
+	$(PYTHON) scripts/evaluate_models.py
+	@echo "✅ Evaluation complete - see outputs/evaluation/model_comparison.json"
 
 evaluate-baseline:
-	python scripts/evaluate.py --model baseline
-
-evaluate-bert:
-	python scripts/evaluate.py --model bert
+	$(PYTHON) scripts/evaluate_baseline.py
 
 # Prediction
 predict:
-	python scripts/predict.py --input data/test_samples.csv --output outputs/predictions.csv
-	@echo "✅ Predictions saved to outputs/predictions.csv"
+	$(PYTHON) scripts/travel_resolver.py
 
 # Development
 test:
-	pytest tests/ -v --cov=src --cov-report=html
-	@echo "✅ Tests complete - see htmlcov/index.html"
+	$(PYTHON) -m pytest tests/ -v
 
 test-fast:
-	pytest tests/ -v -x
+	$(PYTHON) -m pytest tests/ -x -q
 
 notebooks:
 	jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
 
 # Code Quality
 format:
-	black src/ scripts/ tests/
-	isort src/ scripts/ tests/
+	$(PYTHON) -m black src/ scripts/ tests/
+	$(PYTHON) -m isort src/ scripts/ tests/
 	@echo "✅ Code formatted"
 
 lint:
@@ -175,19 +169,12 @@ neo4j-reset:
 	cd docker && docker-compose up -d neo4j
 	@echo "✅ Neo4j reset complete"
 
-neo4j-import:
-	python scripts/import_to_neo4j.py
-	@echo "✅ SNCF data imported to Neo4j"
-
 # Monitoring
 mlflow-ui:
 	mlflow ui --backend-store-uri sqlite:///mlflow/mlflow.db --port 5000
 
 monitor:
 	watch -n 2 'docker stats --no-stream'
-
-# Python executable (use venv if available)
-PYTHON := $(shell if [ -d "venv" ]; then echo "venv/bin/python"; else echo "python"; fi)
 
 # Voice Module
 install-speech:

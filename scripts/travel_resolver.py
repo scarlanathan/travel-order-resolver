@@ -180,14 +180,21 @@ class TravelResolver:
             print("ERROR: Could not extract origin and/or destination")
             return
 
+        resolved_origin = self._resolve_city(result.origin)
+        resolved_destination = self._resolve_city(result.destination)
+        if not resolved_origin or not resolved_destination:
+            missing = result.origin if not resolved_origin else result.destination
+            print(f"ERROR: City '{missing}' not found in station database")
+            return
+
         routes = self.graph.find_all_paths(
-            result.origin,
-            result.destination,
+            resolved_origin,
+            resolved_destination,
             max_paths=max_routes,
         )
 
         if not routes:
-            print(f"No routes found between {result.origin} and {result.destination}")
+            print(f"No routes found between {resolved_origin} and {resolved_destination}")
             return
 
         print(f"\nFound {len(routes)} route(s):\n")

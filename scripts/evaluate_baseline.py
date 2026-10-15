@@ -39,9 +39,6 @@ def main():
     print("\nInitializing Baseline Model...")
     model = BaselineModel()
     print(f"  - Loaded {len(model.cities)} cities in gazetteer")
-    print(f"  - {len(model.combined_patterns)} combined patterns")
-    print(f"  - {len(model.origin_patterns)} origin patterns")
-    print(f"  - {len(model.destination_patterns)} destination patterns")
 
     # Initialize evaluator
     evaluator = NLPEvaluator(verbose=True)
@@ -99,18 +96,17 @@ def main():
 3. ENTITY EXTRACTION:
    - Origin extraction: {result.origin_f1:.1%} F1
    - Destination extraction: {result.destination_f1:.1%} F1
-   - Main errors: Swapped origin/destination due to word order heuristics
 
 4. ROBUSTNESS:
    - Normal text: {result.accuracy_normal:.1%}
    - Lowercase: {result.accuracy_lowercase:.1%}
    - No accents: {result.accuracy_no_accents:.1%}
-   - The model performs well on lowercase text but struggles with
-     sentences where preposition patterns are ambiguous
+   - Normalization (case, accents, hyphens) and fuzzy matching make the
+     gazetteer robust to these variations
 
 5. MAIN WEAKNESSES:
-   - Relies on word order when patterns fail (gazetteer_order method)
-   - Sentences with "depuis X" and "à Y" where order doesn't match pattern
+   - Closed world: a city missing from the gazetteer cannot be extracted
+   - Relies on word order when no cue word precedes a city (gazetteer_order)
    - Tricky cases with names that are also cities (Albert, Florence)
 
 6. PERFORMANCE:

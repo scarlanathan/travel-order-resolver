@@ -26,6 +26,8 @@ from transformers import (
 )
 import numpy as np
 
+from src.nlp.gazetteer import CityGazetteer, find_entity_span
+
 
 @dataclass
 class CamembertExtractionResult:
@@ -97,41 +99,23 @@ class NERDataset(Dataset):
         origin: str,
         destination: str
     ) -> List[Tuple[int, int, str]]:
-        """Find character spans for entities."""
+        """
+        Find character spans for entities.
+
+        Matching is tolerant to case, accents, hyphens and misspellings
+        (labels are canonical names, sentences may contain variants).
+        """
         entities = []
-        text_lower = text.lower()
 
-        origin_span = None
-        dest_span = None
-
-        # Find origin
         if origin and origin != "INVALID":
-            origin_lower = origin.lower()
-            start = text_lower.find(origin_lower)
-            if start != -1:
-                origin_span = (start, start + len(origin_lower), "ORIGIN")
+            span = find_entity_span(text, origin)
+            if span:
+                entities.append((span[0], span[1], "ORIGIN"))
 
-        # Find destination (search entire text, not just after origin)
         if destination and destination != "INVALID":
-            dest_lower = destination.lower()
-            start = text_lower.find(dest_lower)
-            if start != -1:
-                # Check for overlap with origin
-                if origin_span:
-                    o_start, o_end, _ = origin_span
-                    d_end = start + len(dest_lower)
-                    # If overlapping, try to find another occurrence
-                    if not (d_end <= o_start or start >= o_end):
-                        # Overlapping - search after origin
-                        start = text_lower.find(dest_lower, o_end)
-                if start != -1:
-                    dest_span = (start, start + len(dest_lower), "DESTINATION")
-
-        # Add non-None spans
-        if origin_span:
-            entities.append(origin_span)
-        if dest_span:
-            entities.append(dest_span)
+            span = find_entity_span(text, destination, exclude=[e[:2] for e in entities])
+            if span:
+                entities.append((span[0], span[1], "DESTINATION"))
 
         return entities
 
@@ -374,8 +358,25 @@ class CamembertNERTrainer:
 class CamembertNERModel:
     """CamemBERT NER model for inference."""
 
-    def __init__(self, model_path: str):
+    def __init__(
+        self,
+        model_path: str,
+        use_gazetteer: bool = True,
+        gazetteer: Optional[CityGazetteer] = None,
+        fuzzy_cities: bool = False,
+    ):
+        """
+        Args:
+            model_path: Path to a fine-tuned CamemBERT model
+            use_gazetteer: Post-process predictions with the city gazetteer
+                (canonical names, missing entity completion, invalid detection)
+            gazetteer: Prebuilt gazetteer to share between models
+            fuzzy_cities: Also map misspelled names to the closest known city
+                (better on known cities, worse on cities missing from the gazetteer)
+        """
         self.model_path = model_path
+        self.gazetteer = (gazetteer or CityGazetteer()) if use_gazetteer else None
+        self.fuzzy_cities = fuzzy_cities
         try:
             self.tokenizer = CamembertTokenizerFast.from_pretrained(model_path)
             self.model = CamembertForTokenClassification.from_pretrained(model_path)
@@ -409,6 +410,7 @@ class CamembertNERModel:
         )
 
         offset_mapping = inputs.pop("offset_mapping")[0].tolist()
+        word_ids = inputs.word_ids(0)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         # Predict
@@ -417,74 +419,54 @@ class CamembertNERModel:
             predictions = torch.argmax(outputs.logits, dim=-1)[0].cpu().tolist()
             probabilities = torch.softmax(outputs.logits, dim=-1)[0].cpu().tolist()
 
-        # Extract entities from predictions
+        # Word-level labels: the first subword decides the label of the whole
+        # word (avoids entities cut inside a word, e.g. "d'" for "d'Orsay")
+        words = []  # [label, start, end, prob]
+        previous_word = None
+        for idx, word_idx in enumerate(word_ids):
+            start, end = offset_mapping[idx]
+            if word_idx is None or start == end:
+                continue
+            if word_idx != previous_word:
+                pred = predictions[idx]
+                words.append([ID2LABEL.get(pred, "O"), start, end, probabilities[idx][pred]])
+            else:
+                words[-1][2] = end
+            previous_word = word_idx
+
+        # Group consecutive words into entities (B- starts, I- of the same type continues)
+        entities = []  # [type, start, end, probs]
+        previous_type = None
+        for label, start, end, prob in words:
+            if label == "O":
+                previous_type = None
+                continue
+            entity_type = label[2:]
+            if label.startswith("I-") and previous_type == entity_type:
+                entities[-1][2] = end
+                entities[-1][3].append(prob)
+            else:
+                entities.append([entity_type, start, end, [prob]])
+            previous_type = entity_type
+
         origin = None
         destination = None
         origin_conf = 0.0
         dest_conf = 0.0
+        for entity_type, start, end, probs in entities:
+            entity_text = self._clean_entity(sentence[start:end])
+            avg_conf = sum(probs) / len(probs)
+            if entity_type == "ORIGIN" and origin is None:
+                origin, origin_conf = entity_text, avg_conf
+            elif entity_type == "DESTINATION" and destination is None:
+                destination, dest_conf = entity_text, avg_conf
 
-        current_entity = None
-        current_start = None
-        current_end = None
-        current_probs = []
-
-        for idx, (pred, (start, end)) in enumerate(zip(predictions, offset_mapping)):
-            if start == end:  # Special token
-                continue
-
-            label = ID2LABEL.get(pred, "O")
-
-            if label.startswith("B-"):
-                # Save previous entity
-                if current_entity and current_start is not None:
-                    entity_text = self._clean_entity(sentence[current_start:current_end])
-
-                    avg_conf = sum(current_probs) / len(current_probs) if current_probs else 0
-                    if current_entity == "ORIGIN" and origin is None:
-                        origin = entity_text
-                        origin_conf = avg_conf
-                    elif current_entity == "DESTINATION" and destination is None:
-                        destination = entity_text
-                        dest_conf = avg_conf
-
-                # Start new entity
-                current_entity = label[2:]
-                current_start = start
-                current_end = end
-                current_probs = [probabilities[idx][pred]]
-
-            elif label.startswith("I-") and current_entity == label[2:]:
-                # Continue entity
-                current_end = end
-                current_probs.append(probabilities[idx][pred])
-
-            else:
-                # End entity
-                if current_entity and current_start is not None:
-                    entity_text = self._clean_entity(sentence[current_start:current_end])
-                    avg_conf = sum(current_probs) / len(current_probs) if current_probs else 0
-                    if current_entity == "ORIGIN" and origin is None:
-                        origin = entity_text
-                        origin_conf = avg_conf
-                    elif current_entity == "DESTINATION" and destination is None:
-                        destination = entity_text
-                        dest_conf = avg_conf
-
-                current_entity = None
-                current_start = None
-                current_end = None
-                current_probs = []
-
-        # Handle last entity
-        if current_entity and current_start is not None:
-            entity_text = self._clean_entity(sentence[current_start:current_end])
-            avg_conf = sum(current_probs) / len(current_probs) if current_probs else 0
-            if current_entity == "ORIGIN" and origin is None:
-                origin = entity_text
-                origin_conf = avg_conf
-            elif current_entity == "DESTINATION" and destination is None:
-                destination = entity_text
-                dest_conf = avg_conf
+        method = "camembert_ner"
+        if self.gazetteer is not None:
+            origin, destination = self.gazetteer.refine(
+                sentence, origin, destination, fuzzy=self.fuzzy_cities
+            )
+            method = "camembert_ner+gazetteer"
 
         is_valid = origin is not None and destination is not None
         confidence = (origin_conf + dest_conf) / 2 if is_valid else 0.0
@@ -494,7 +476,7 @@ class CamembertNERModel:
             destination=destination,
             is_valid=is_valid,
             confidence=confidence,
-            method="camembert_ner"
+            method=method
         )
 
 

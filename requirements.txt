@@ -5,6 +5,7 @@
 # Core NLP & Deep Learning
 torch>=2.0.0
 transformers>=4.35.0
+accelerate>=1.1.0  # Required by transformers Trainer
 datasets>=2.14.0
 tokenizers>=0.15.0
 sentencepiece>=0.1.99

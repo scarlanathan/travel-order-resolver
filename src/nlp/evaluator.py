@@ -94,6 +94,11 @@ class NLPEvaluator:
 
     def _cities_match(self, pred: Optional[str], gold: Optional[str]) -> bool:
         """Check if two city names match (with normalization)."""
+        # "INVALID" in the gold labels means "no city": models return None
+        if pred == "INVALID":
+            pred = None
+        if gold == "INVALID":
+            gold = None
         if pred is None and gold is None:
             return True
         if pred is None or gold is None:
@@ -286,8 +291,8 @@ class NLPEvaluator:
             }
         }
 
-        # Store sample errors
-        result.errors = errors[:50]  # Limit to first 50 errors for analysis
+        # Store all errors for analysis
+        result.errors = errors
 
         return result
 
